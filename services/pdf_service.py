@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-import fitz
+from io import BytesIO
+
+from pypdf import PdfReader
 
 
 class PdfProcessingError(RuntimeError):
@@ -12,8 +14,8 @@ class PdfProcessingError(RuntimeError):
 def get_page_count(pdf_bytes: bytes) -> int:
     """Return the number of pages in an in-memory PDF."""
     try:
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
-            return document.page_count
+        with BytesIO(pdf_bytes) as stream:
+            return len(PdfReader(stream).pages)
     except Exception as exc:
         raise PdfProcessingError("変換後PDFのページ数を取得できませんでした。") from exc
 
@@ -35,10 +37,13 @@ def extract_page_texts(
 ) -> dict[int, str]:
     """Extract text for an inclusive one-based range while retaining page numbers."""
     try:
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
-            validate_page_range(start_page, end_page, document.page_count)
+        with BytesIO(pdf_bytes) as stream:
+            document = PdfReader(stream)
+            validate_page_range(start_page, end_page, len(document.pages))
             pages = {
-                page_number: document.load_page(page_number - 1).get_text("text").strip()
+                page_number: (
+                    document.pages[page_number - 1].extract_text() or ""
+                ).strip()
                 for page_number in range(start_page, end_page + 1)
             }
     except ValueError:
@@ -51,4 +56,3 @@ def extract_page_texts(
             "指定ページに抽出可能なテキストがありません。画像化された文書は対象外です。"
         )
     return pages
-

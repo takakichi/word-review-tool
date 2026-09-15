@@ -34,11 +34,12 @@ st.title("Word文書 自動レビュー支援ツール")
 st.caption("文書はMicrosoft WordでPDF化し、許可されたOllama API以外には送信しません。")
 
 
-def _client(base_url: str) -> OllamaClient:
+def _client(base_url: str, connect_timeout: int, read_timeout: int) -> OllamaClient:
     """Create an Ollama client from UI and environment settings."""
     return OllamaClient(
         base_url=base_url,
-        timeout_seconds=SETTINGS.ollama_timeout_seconds,
+        connect_timeout_seconds=connect_timeout,
+        read_timeout_seconds=read_timeout,
         allowed_hosts=SETTINGS.ollama_allowed_hosts,
     )
 
@@ -97,9 +98,20 @@ with left:
 
     st.markdown("#### Ollama設定")
     ollama_url = st.text_input("Ollama API URL", value=SETTINGS.ollama_base_url)
+    connect_timeout = int(st.number_input(
+        "接続タイムアウト（秒）", min_value=1,
+        value=SETTINGS.ollama_connect_timeout_seconds, step=1,
+    ))
+    read_timeout = int(st.number_input(
+        "応答待ち時間（秒）", min_value=1,
+        value=SETTINGS.ollama_read_timeout_seconds, step=30,
+        help="LLM生成完了までの応答待ち時間です。遅いサーバでは増やしてください。",
+    ))
     if st.button("モデル一覧を取得／更新", use_container_width=True):
         try:
-            st.session_state.ollama_models = _client(ollama_url).list_models()
+            st.session_state.ollama_models = _client(
+                ollama_url, connect_timeout, read_timeout
+            ).list_models()
             st.session_state.models_url = ollama_url
             if not st.session_state.ollama_models:
                 st.warning("インストール済みモデルがありません。`ollama pull <model>`を実行してください。")
@@ -187,15 +199,54 @@ with right:
         with st.expander("抽出テキスト", expanded=False):
             st.code(format_pages(page_texts), language="text")
 
-    if execute:
+    result_is_current = bool(
+        current_signature
+        and st.session_state.get("run_signature") == current_signature
+        and st.session_state.get("review_result")
+    )
+    previous_result = (
+        ReviewRunResult.model_validate(st.session_state.review_result)
+        if result_is_current else None
+    )
+    retry_numbers: list[int] = []
+    retry = False
+    if previous_result and previous_result.failures:
+        retry_numbers = st.multiselect(
+            "再実行する失敗チャンク",
+            [failure.chunk_number for failure in previous_result.failures],
+            default=[failure.chunk_number for failure in previous_result.failures],
+            format_func=lambda value: f"チャンク {value}",
+        )
+        retry = st.button(
+            "選択した失敗チャンクだけ再実行", disabled=not bool(retry_numbers)
+        )
+        st.caption("成功済みチャンクは再送信しません。タイムアウト設定だけ変更して再実行できます。")
+
+    if execute or retry:
         try:
-            client = _client(ollama_url)
+            client = _client(ollama_url, connect_timeout, read_timeout)
             progress = st.progress(0, text="レビューを開始します...")
+            live_results = st.empty()
+            attempt_count = [0]
+            target_count = len(retry_numbers) if retry else len(chunks)
             with st.status("レビュー実行中", expanded=True) as status:
 
                 def show_progress(index: int, total: int) -> None:
                     st.write(f"チャンク {index} / {total} レビュー中")
-                    progress.progress((index - 1) / total, text=f"チャンク {index} / {total}")
+                    progress.progress(attempt_count[0] / target_count, text=f"チャンク {index} / {total}")
+                    attempt_count[0] += 1
+
+                def save_partial_result(partial: ReviewRunResult) -> None:
+                    st.session_state.review_result = partial.model_dump()
+                    st.session_state.run_signature = current_signature
+                    success_count = sum(
+                        item.failure is None for item in partial.chunk_results.values()
+                    )
+                    live_results.markdown(
+                        f"成功: {success_count} / {len(chunks)} チャンク、"
+                        f"失敗: {len(partial.failures)} チャンク\n\n"
+                        + reviews_to_markdown(partial.reviews)
+                    )
 
                 result = run_review(
                     client,
@@ -203,9 +254,16 @@ with right:
                     instruction_prompt,
                     chunks,
                     on_progress=show_progress,
+                    on_update=save_partial_result,
+                    previous_result=previous_result if retry else None,
+                    chunk_numbers=retry_numbers if retry else None,
                 )
-                progress.progress(1.0, text="レビュー完了")
-                status.update(label="レビュー完了", state="complete", expanded=False)
+                progress.progress(1.0, text="今回の処理終了")
+                status.update(
+                    label="処理終了（失敗チャンクあり）" if result.failures else "レビュー完了",
+                    state="error" if result.failures else "complete", expanded=False,
+                )
+            live_results.empty()
             st.session_state.review_result = result.model_dump()
             st.session_state.run_signature = current_signature
         except OllamaError as exc:
@@ -243,13 +301,26 @@ with right:
                 st.markdown(f"**改善案**  \n{item.suggestion}")
 
         if result.failures:
-            st.warning(f"{len(result.failures)}件のチャンクでJSON解析に失敗しました。")
+            st.warning(
+                f"{len(result.failures)}件のチャンクが失敗しました。"
+                "以下の結果・ダウンロードは成功済みチャンク分です。"
+            )
             for failure in result.failures:
-                with st.expander(f"チャンク {failure.chunk_number} の解析エラー"):
+                kind_label = "通信エラー" if failure.kind == "request" else "JSON解析エラー"
+                with st.expander(f"チャンク {failure.chunk_number} の{kind_label}"):
                     st.error(failure.error)
-                    st.code(failure.raw_response, language="text")
+                    if failure.raw_response:
+                        st.code(failure.raw_response, language="text")
+            if execute or retry:
+                st.rerun()
 
         markdown_report = reviews_to_markdown(result.reviews)
+        if result.failures:
+            failed_numbers = ", ".join(str(item.chunk_number) for item in result.failures)
+            markdown_report = (
+                f"> 未完了の部分結果です。失敗チャンク: {failed_numbers}\n\n"
+                + markdown_report
+            )
         download_col1, download_col2 = st.columns(2)
         with download_col1:
             st.download_button(

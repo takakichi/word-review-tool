@@ -34,6 +34,16 @@ class ParseFailure(BaseModel):
     chunk_number: int = Field(ge=1)
     error: str
     raw_response: str
+    kind: Literal["parse", "request"] = "parse"
+
+
+class ChunkReviewResult(BaseModel):
+    """Latest attempt for one chunk; replacements prevent duplicate retry results."""
+
+    chunk_number: int = Field(ge=1)
+    reviews: list[ReviewItem] = Field(default_factory=list)
+    failure: ParseFailure | None = None
+    raw_response: str = ""
 
 
 class ReviewRunResult(BaseModel):
@@ -42,4 +52,4 @@ class ReviewRunResult(BaseModel):
     reviews: list[ReviewItem] = Field(default_factory=list)
     failures: list[ParseFailure] = Field(default_factory=list)
     raw_responses: list[str] = Field(default_factory=list)
-
+    chunk_results: dict[int, ChunkReviewResult] = Field(default_factory=dict)

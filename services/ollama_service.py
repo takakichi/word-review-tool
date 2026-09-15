@@ -35,10 +35,17 @@ class OllamaClient:
     """Small injectable client used by the review orchestration service."""
 
     def __init__(
-        self, base_url: str, timeout_seconds: int, allowed_hosts: tuple[str, ...]
+        self,
+        base_url: str,
+        connect_timeout_seconds: int,
+        read_timeout_seconds: int,
+        allowed_hosts: tuple[str, ...],
     ) -> None:
         self.base_url = normalize_and_validate_url(base_url, allowed_hosts)
-        self.timeout_seconds = timeout_seconds
+        if connect_timeout_seconds <= 0 or read_timeout_seconds <= 0:
+            raise OllamaError("タイムアウトは正の秒数で指定してください。")
+        self.connect_timeout_seconds = connect_timeout_seconds
+        self.read_timeout_seconds = read_timeout_seconds
         self.session = requests.Session()
         self.session.trust_env = False
 
@@ -46,7 +53,8 @@ class OllamaClient:
         """Return installed Ollama model names."""
         try:
             response = self.session.get(
-                f"{self.base_url}/api/tags", timeout=min(self.timeout_seconds, 15)
+                f"{self.base_url}/api/tags",
+                timeout=(self.connect_timeout_seconds, min(self.read_timeout_seconds, 15)),
             )
             response.raise_for_status()
             payload = response.json()
@@ -76,7 +84,7 @@ class OllamaClient:
                     "format": "json",
                     "options": {"temperature": 0.1},
                 },
-                timeout=self.timeout_seconds,
+                timeout=(self.connect_timeout_seconds, self.read_timeout_seconds),
             )
             if response.status_code == 404:
                 raise OllamaError(
@@ -92,6 +100,17 @@ class OllamaClient:
             return generated
         except OllamaError:
             raise
+        except requests.ConnectTimeout as exc:
+            LOGGER.warning("Ollama connection timed out.")
+            raise OllamaError(
+                f"Ollama APIへの接続がタイムアウトしました（{self.connect_timeout_seconds}秒）。"
+            ) from exc
+        except requests.ReadTimeout as exc:
+            LOGGER.warning("Ollama response wait timed out.")
+            raise OllamaError(
+                f"Ollama APIの応答待ちがタイムアウトしました（{self.read_timeout_seconds}秒）。"
+                "応答待ち時間を増やして、失敗チャンクを再実行してください。"
+            ) from exc
         except requests.Timeout as exc:
             LOGGER.warning("Ollama request timed out.")
             raise OllamaError("Ollama APIがタイムアウトしました。") from exc
@@ -100,4 +119,3 @@ class OllamaClient:
             raise OllamaError(
                 "Ollamaへのレビュー要求に失敗しました。接続状態とモデルを確認してください。"
             ) from exc
-
