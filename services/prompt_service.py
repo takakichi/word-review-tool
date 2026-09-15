@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from config.review_rules import REVIEW_RULES
+# プロンプトは文字列を組み立てるだけの関数にし、画面やAPI接続がなくてもテストできます。
 
 
 def build_instruction_prompt(
@@ -13,13 +14,17 @@ def build_instruction_prompt(
         raise ValueError("レビュー観点を1つ以上指定してください。")
 
     unknown = [name for name in selected_rules if name not in REVIEW_RULES]
+    # リスト内包表記で、設定辞書にない観点だけを取り出して検証します。
     if unknown:
         raise ValueError(f"未定義のレビュー観点です: {', '.join(unknown)}")
 
     rule_lines = [f"- {name}: {REVIEW_RULES[name]}" for name in selected_rules]
+    # 観点名だけでなく、辞書にある具体的な指示も含めます。f文字列は{}内の値を埋め込みます。
     if other_perspective.strip():
         rule_lines.append(f"- その他: {other_perspective.strip()}")
 
+    # 行のリストを改行で連結して1つの文字列にします。
+    # 下の *rule_lines は、リストの中身を展開して各観点の行を挿入する書き方です。
     return "\n".join(
         [
             "# 役割",
@@ -48,10 +53,11 @@ def build_full_prompt(instruction_prompt: str, document_chunk: str) -> str:
     """Append one page-aware document chunk to the instruction prompt."""
     if not document_chunk.strip():
         raise ValueError("レビュー対象本文が空です。")
+    # 共通の指示に1チャンクの本文だけを追加します。
+    # 表示用とAPI送信用が同じ関数を使うため、確認画面と実際の送信内容を一致させられます。
     return (
         f"{instruction_prompt}\n\n"
         "# レビュー対象文書\n"
         "以下の本文のみをレビューしてください。\n\n"
         f"{document_chunk}"
     )
-

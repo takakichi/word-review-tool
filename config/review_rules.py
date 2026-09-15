@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+# 観点名をキー、LLMへの具体的指示を値とする辞書です。
+# UIの選択肢とプロンプト生成が同じ辞書を参照し、定義の食い違いを防ぎます。
+# 括弧内で隣接した文字列はPythonが連結するので、長い指示を複数行に分けられます。
 REVIEW_RULES: dict[str, str] = {
     "矛盾・不整合": (
         "同一文書内で、条件、数値、用語、処理内容、入出力の対応に矛盾がないか確認する。"
@@ -29,6 +32,7 @@ REVIEW_RULES: dict[str, str] = {
     ),
 }
 
+# 起動時に選択済みにする観点。tuple[str, ...]は任意個数の文字列のタプルです。
 DEFAULT_REVIEW_RULES: tuple[str, ...] = (
     "矛盾・不整合",
     "曖昧な表現",
@@ -37,4 +41,3 @@ DEFAULT_REVIEW_RULES: tuple[str, ...] = (
     "実現可能性",
     "テスト可能性",
 )
-

@@ -3,6 +3,7 @@ from unittest.mock import Mock
 
 from services.review_service import parse_review_response, run_review
 from services.ollama_service import OllamaError
+# レビュー統括処理は、generateメソッドを持つモックを渡して単独で検証できます。
 
 
 VALID_RESPONSE = (
@@ -15,6 +16,7 @@ def test_request_failure_keeps_successful_chunks_and_publishes_partial_updates()
     client = Mock()
     client.generate.side_effect = [VALID_RESPONSE, OllamaError("timeout"), '{"reviews":[]}']
     updates = []
+    # updates.appendをコールバックとして渡し、保存時点ごとのスナップショットを集めます。
     result = run_review(client, "model", "instructions", ["one", "two", "three"], on_update=updates.append)
     assert len(result.reviews) == 1
     assert result.failures[0].chunk_number == 2
@@ -26,6 +28,7 @@ def test_request_failure_keeps_successful_chunks_and_publishes_partial_updates()
 
 
 def test_retry_only_failed_chunk_replaces_failure_without_duplicates() -> None:
+    # 初回に一部失敗させた後、別モックで失敗番号だけ再実行し、旧結果が残るか確認します。
     client = Mock()
     client.generate.side_effect = [VALID_RESPONSE, OllamaError("timeout")]
     first = run_review(client, "model", "instructions", ["one", "two"])

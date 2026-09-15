@@ -1,4 +1,5 @@
 """HTTP requests are mocked so tests need no Ollama server."""
+# 実通信はせず、送信引数とエラーの変換だけを検証します。
 
 from unittest.mock import Mock
 
@@ -15,8 +16,10 @@ def _client() -> OllamaClient:
 def test_generate_passes_separate_connect_and_read_timeouts() -> None:
     client = _client()
     client.session.post = Mock(return_value=Mock(json=lambda: {"response": '{"reviews":[]}'}))
+    # postを差し替え、response.json()が決まった辞書を返す偽のHTTP応答を作ります。
     assert client.generate("model", "prompt") == '{"reviews":[]}'
     assert client.session.post.call_args.kwargs["timeout"] == (10, 600)
+    # call_argsで、モックが実際にどの引数で呼び出されたかを確認できます。
 
 
 @pytest.mark.parametrize("error,expected", [

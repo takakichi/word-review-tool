@@ -18,12 +18,14 @@ def normalize_and_validate_url(base_url: str, allowed_hosts: tuple[str, ...]) ->
     """Validate scheme and explicit host allowlist, returning a normalized URL."""
     normalized = base_url.strip().rstrip("/")
     parsed = urlparse(normalized)
+    # URLをスキーム・ホスト名などへ分解し、許可する接続先か確認します。
     hostname = (parsed.hostname or "").lower()
     if parsed.scheme not in {"http", "https"} or not hostname:
         raise OllamaError("Ollama API URLはhttpまたはhttpsの完全なURLで指定してください。")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise OllamaError("Ollama API URLに認証情報、クエリ、フラグメントは指定できません。")
     if hostname not in allowed_hosts:
+        # 文書の誤送信を防ぐ、明示的な許可リストです。未登録ホストへは要求を送りません。
         raise OllamaError(
             f"接続先ホスト '{hostname}' は許可されていません。"
             "OLLAMA_ALLOWED_HOSTSへ社内Ollamaホストを追加してください。"
@@ -41,12 +43,14 @@ class OllamaClient:
         read_timeout_seconds: int,
         allowed_hosts: tuple[str, ...],
     ) -> None:
+        # __init__はオブジェクト生成時に実行されます。self.xxxに保存した設定を各メソッドで使います。
         self.base_url = normalize_and_validate_url(base_url, allowed_hosts)
         if connect_timeout_seconds <= 0 or read_timeout_seconds <= 0:
             raise OllamaError("タイムアウトは正の秒数で指定してください。")
         self.connect_timeout_seconds = connect_timeout_seconds
         self.read_timeout_seconds = read_timeout_seconds
         self.session = requests.Session()
+        # SessionでHTTP接続を再利用します。環境変数のプロキシ等は使わない設定です。
         self.session.trust_env = False
 
     def list_models(self) -> list[str]:
@@ -57,8 +61,10 @@ class OllamaClient:
                 timeout=(self.connect_timeout_seconds, min(self.read_timeout_seconds, 15)),
             )
             response.raise_for_status()
+            # HTTPの4xx/5xxを例外に変換します。成功時はそのまま次へ進みます。
             payload = response.json()
             return sorted(
+                # 応答のmodels配列から名前を取り出し、画面で選びやすいように並べ替えます。
                 model["name"]
                 for model in payload.get("models", [])
                 if isinstance(model, dict) and model.get("name")
@@ -75,6 +81,9 @@ class OllamaClient:
         if not model.strip():
             raise OllamaError("Ollamaモデルを指定してください。")
         try:
+            # POSTのjson引数にはPythonの辞書を渡します。requestsがJSONへ変換して送信します。
+            # stream=Falseは生成完了まで待つ方式、format="json"はLLMへの出力形式の指定です。
+            # 形式指定だけでは不正な回答を防ぎ切れないため、受信後に別サービスで検証します。
             response = self.session.post(
                 f"{self.base_url}/api/generate",
                 json={
@@ -85,6 +94,7 @@ class OllamaClient:
                     "options": {"temperature": 0.1},
                 },
                 timeout=(self.connect_timeout_seconds, self.read_timeout_seconds),
+                # timeoutのタプルは（接続待ち, 応答の受信待ち）。全処理の厳密な時間上限ではありません。
             )
             if response.status_code == 404:
                 raise OllamaError(
@@ -92,6 +102,7 @@ class OllamaClient:
                 )
             response.raise_for_status()
             payload = response.json()
+            # ここで解析するのはAPI応答の外側のJSON。responseフィールド内のLLM回答はまだ文字列です。
             if payload.get("error"):
                 raise OllamaError(f"Ollamaエラー: {payload['error']}")
             generated = payload.get("response")
@@ -99,8 +110,10 @@ class OllamaClient:
                 raise OllamaError("Ollamaレスポンスにresponse文字列がありません。")
             return generated
         except OllamaError:
+            # 既に利用者向けの専用例外になっていれば、メッセージを変えずそのまま伝えます。
             raise
         except requests.ConnectTimeout as exc:
+            # 具体的な例外を先に捕まえ、接続待ちと応答待ちを区別して案内します。
             LOGGER.warning("Ollama connection timed out.")
             raise OllamaError(
                 f"Ollama APIへの接続がタイムアウトしました（{self.connect_timeout_seconds}秒）。"

@@ -1,4 +1,10 @@
 """Streamlit UI for local Word document review with Ollama."""
+# 学習の入口: このファイルは画面と各サービスをつなぐ「司令塔」です。
+# 処理の流れ: 設定入力 → WordをPDF化 → ページ抽出 → プロンプト生成
+#              → チャンクごとにLLMへ送信 → 結果表示・ダウンロード。
+# 詳細な処理はservices/、データの形はmodels/、共通処理はutils/に分離しています。
+# Streamlitは入力操作のたびに、このスクリプトを先頭から再実行します。
+# 通常の変数は作り直されますが、st.session_stateの値は同じセッション内で保持されます。
 
 from __future__ import annotations
 
@@ -29,6 +35,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
+# 画面全体の設定。st.xxx()を呼ぶと画面要素が上から順番に配置されます。
 st.set_page_config(page_title="Word文書 自動レビュー支援", page_icon="📝", layout="wide")
 st.title("Word文書 自動レビュー支援ツール")
 st.caption("文書はMicrosoft WordでPDF化し、許可されたOllama API以外には送信しません。")
@@ -36,6 +43,8 @@ st.caption("文書はMicrosoft WordでPDF化し、許可されたOllama API以�
 
 def _client(base_url: str, connect_timeout: int, read_timeout: int) -> OllamaClient:
     """Create an Ollama client from UI and environment settings."""
+    # API通信オブジェクトを組み立てるだけで、この時点では通信しません。
+    # 名前付き引数を使い、どの値をどの設定へ渡すかを明示しています。
     return OllamaClient(
         base_url=base_url,
         connect_timeout_seconds=connect_timeout,
@@ -46,10 +55,13 @@ def _client(base_url: str, connect_timeout: int, read_timeout: int) -> OllamaCli
 
 def _clear_document_state() -> None:
     """Drop derived in-memory state when the uploaded file changes."""
+    # 文書の変更時、旧文書のPDFやレビュー結果を新文書へ流用しないための初期化。
+    # pop(key, None)は、そのキーが存在しなくてもエラーにしません。
     for key in ("document_digest", "pdf_bytes", "total_pages", "review_result", "run_signature"):
         st.session_state.pop(key, None)
 
 
+# 1:1.45の比率で左右に分割。with left: 内の画面要素は左カラムに配置されます。
 left, right = st.columns([1, 1.45], gap="large")
 
 with left:
@@ -60,11 +72,14 @@ with left:
         help="PDF変換には、このPCにインストールされたMicrosoft Wordを使用します。",
     )
 
+    # アップローダーは未選択ならNone、選択済みならファイルのオブジェクトを返します。
     if uploaded is None:
         _clear_document_state()
     else:
         uploaded_bytes = uploaded.getvalue()
+        # SHA-256で内容を識別します。暗号化ではなく「内容の変化を検出する値」です。
         digest = hashlib.sha256(uploaded_bytes).hexdigest()
+        # 同じ文書なら、他の入力欄の操作による再実行時にもWord変換を繰り返しません。
         if st.session_state.get("document_digest") != digest:
             _clear_document_state()
             try:
@@ -72,11 +87,13 @@ with left:
                     pdf_bytes = convert_docx_bytes_to_pdf(uploaded_bytes, uploaded.name)
                     total_pages = get_page_count(pdf_bytes)
                 st.session_state.document_digest = digest
+                # PDFの実ファイルは変換サービス内で削除済み。ここではバイト列のみ保持します。
                 st.session_state.pdf_bytes = pdf_bytes
                 st.session_state.total_pages = total_pages
             except (WordConversionError, PdfProcessingError) as exc:
                 st.error(str(exc))
 
+    # get(key, 0)はキーがないときに0を返すので、文書未選択でも画面を描画できます。
     total_pages = int(st.session_state.get("total_pages", 0))
     if total_pages:
         st.success(f"PDF変換完了: 全 {total_pages} ページ")
@@ -98,6 +115,7 @@ with left:
 
     st.markdown("#### Ollama設定")
     ollama_url = st.text_input("Ollama API URL", value=SETTINGS.ollama_base_url)
+    # 接続待ちと生成完了までの応答待ちは別設定です。値は画面から変更できます。
     connect_timeout = int(st.number_input(
         "接続タイムアウト（秒）", min_value=1,
         value=SETTINGS.ollama_connect_timeout_seconds, step=1,
@@ -119,6 +137,8 @@ with left:
             st.session_state.ollama_models = []
             st.error(str(exc))
 
+    # 取得時と現在のURLが一致する場合だけモデル一覧を使います。
+    # 三項式「A if 条件 else B」は、条件に応じて値を選ぶ書き方です。
     models = (
         st.session_state.get("ollama_models", [])
         if st.session_state.get("models_url") == ollama_url
@@ -128,6 +148,7 @@ with left:
         default_index = models.index(SETTINGS.ollama_model) if SETTINGS.ollama_model in models else 0
         ollama_model = st.selectbox("Ollamaモデル", models, index=default_index)
     else:
+        # モデル一覧未取得・取得失敗時には、手入力欄で同じモデル名を指定できます。
         ollama_model = st.text_input(
             "Ollamaモデル",
             value=SETTINGS.ollama_model,
@@ -152,6 +173,8 @@ with left:
         step=500,
     )
 
+# ここからは画面入力を使ったレビューの事前準備です。まだLLMには送信しません。
+# dict[int, str]は「整数のページ番号 → 文字列の本文」の辞書という型ヒントです。
 page_texts: dict[int, str] = {}
 chunks: list[str] = []
 instruction_prompt = ""
@@ -166,11 +189,14 @@ if total_pages and st.session_state.get("pdf_bytes"):
             st.session_state.pdf_bytes, int(start_page), int(end_page)
         )
         chunks = chunk_page_texts(page_texts, int(chunk_size))
+        # 指示だけのプロンプト(A)と、本文を含むチャンク別プロンプト(B)を分けます。
         instruction_prompt = build_instruction_prompt(selected_rules, other_perspective)
         full_prompts = [build_full_prompt(instruction_prompt, chunk) for chunk in chunks]
         current_signature = hashlib.sha256(
             (ollama_url + ollama_model + "\n".join(full_prompts)).encode("utf-8")
         ).hexdigest()
+        # この識別値で旧結果と現在のレビュー条件の対応を確認します。
+        # タイムアウト値は含めないので、待ち時間だけ変えた再試行では結果を保持できます。
     except (ValueError, PdfProcessingError) as exc:
         preparation_error = str(exc)
 
@@ -178,6 +204,7 @@ with left:
     if preparation_error:
         st.error(preparation_error)
     if instruction_prompt:
+        # expanderは折りたたみ領域、codeはコピーしやすいテキスト表示です。
         with st.expander("A. レビュー指示プロンプト", expanded=False):
             st.code(instruction_prompt, language="text")
         with st.expander("B. 実際のLLM送信プロンプト", expanded=False):
@@ -186,6 +213,7 @@ with left:
                 with st.expander(f"チャンク {index} / {len(full_prompts)}", expanded=False):
                     st.code(prompt, language="text")
 
+    # ボタンは押された再実行時だけTrueになります。必要な入力がなければ無効にします。
     execute = st.button(
         "レビューを実行",
         type="primary",
@@ -199,18 +227,21 @@ with right:
         with st.expander("抽出テキスト", expanded=False):
             st.code(format_pages(page_texts), language="text")
 
+    # 対象条件が一致するときだけ、保存済みの結果を再実行の土台として読み込みます。
     result_is_current = bool(
         current_signature
         and st.session_state.get("run_signature") == current_signature
         and st.session_state.get("review_result")
     )
     previous_result = (
+        # model_validateで、保存した辞書をPydanticモデルへ戻します。
         ReviewRunResult.model_validate(st.session_state.review_result)
         if result_is_current else None
     )
     retry_numbers: list[int] = []
     retry = False
     if previous_result and previous_result.failures:
+        # 通信失敗とJSON解析失敗の両方が、手動再実行の対象になります。
         retry_numbers = st.multiselect(
             "再実行する失敗チャンク",
             [failure.chunk_number for failure in previous_result.failures],
@@ -227,16 +258,22 @@ with right:
             client = _client(ollama_url, connect_timeout, read_timeout)
             progress = st.progress(0, text="レビューを開始します...")
             live_results = st.empty()
+            # st.empty()は後から内容を差し替えられる画面上の表示場所です。
+            # リストの要素を書き換えることで、下の内側の関数から進捗回数を更新します。
             attempt_count = [0]
             target_count = len(retry_numbers) if retry else len(chunks)
             with st.status("レビュー実行中", expanded=True) as status:
 
                 def show_progress(index: int, total: int) -> None:
+                    # コールバック: サービスがチャンク開始時に呼ぶ、UI側の関数です。
+                    # 元のチャンク番号と今回の処理件数は、再試行時には一致しない場合があります。
                     st.write(f"チャンク {index} / {total} レビュー中")
                     progress.progress(attempt_count[0] / target_count, text=f"チャンク {index} / {total}")
                     attempt_count[0] += 1
 
                 def save_partial_result(partial: ReviewRunResult) -> None:
+                    # 内側の関数は、外側のcurrent_signatureやlive_resultsを参照できます。
+                    # model_dumpでモデルを辞書にして、全体完了を待たずにセッションへ保存します。
                     st.session_state.review_result = partial.model_dump()
                     st.session_state.run_signature = current_signature
                     success_count = sum(
@@ -249,6 +286,7 @@ with right:
                     )
 
                 result = run_review(
+                    # 関数そのものを渡し、実行タイミングはサービス側に任せます（()は付けません）。
                     client,
                     ollama_model,
                     instruction_prompt,
@@ -264,6 +302,7 @@ with right:
                     state="error" if result.failures else "complete", expanded=False,
                 )
             live_results.empty()
+            # 処理中の表示を消し、以降は下の統一された結果表示を使います。
             st.session_state.review_result = result.model_dump()
             st.session_state.run_signature = current_signature
         except OllamaError as exc:
@@ -272,6 +311,7 @@ with right:
             logging.getLogger(__name__).exception("Unexpected review failure (content omitted).")
             st.error(f"レビュー処理で予期しないエラーが発生しました: {type(exc).__name__}")
 
+    # 処理でセッションが更新された可能性があるため、条件の一致をここでも再確認します。
     result_is_current = bool(
         current_signature
         and st.session_state.get("run_signature") == current_signature
@@ -287,6 +327,7 @@ with right:
             format_func=lambda value: f"{SEVERITY_LABELS[value]} ({value})",
         )
         visible_reviews = [item for item in result.reviews if item.severity in severity_filter]
+        # フィルターは表示だけに適用。ダウンロードには成功済みの全指摘を含めます。
         if not visible_reviews:
             st.info("表示条件に該当する指摘はありません。")
         for item in visible_reviews:
@@ -312,9 +353,11 @@ with right:
                     if failure.raw_response:
                         st.code(failure.raw_response, language="text")
             if execute or retry:
+                # 失敗一覧が更新されたので再描画し、最新の再実行選択欄を表示します。
                 st.rerun()
 
         markdown_report = reviews_to_markdown(result.reviews)
+        # 一部失敗時には「指摘なし」と「全チャンク成功」を混同しないよう注記を付けます。
         if result.failures:
             failed_numbers = ", ".join(str(item.chunk_number) for item in result.failures)
             markdown_report = (
@@ -323,6 +366,8 @@ with right:
             )
         download_col1, download_col2 = st.columns(2)
         with download_col1:
+            # 文字列をUTF-8のバイト列へ変換してダウンロードに渡します。
+            # utf-8-sigはBOM付きで、Windowsのエディターでも文字コードを判別しやすくします。
             st.download_button(
                 "Markdownをダウンロード",
                 data=markdown_report.encode("utf-8-sig"),
@@ -331,6 +376,7 @@ with right:
                 use_container_width=True,
             )
         with download_col2:
+            # ensure_ascii=Falseで日本語をそのまま出力し、indent=2で読みやすく整形します。
             st.download_button(
                 "JSONをダウンロード",
                 data=json.dumps(

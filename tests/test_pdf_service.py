@@ -1,4 +1,6 @@
 from io import BytesIO
+# このテストは小さなPDFをメモリ上で生成し、ページ数と抽出処理を実際に検証します。
+# Word変換やLLM通信を必要としないので、PDFサービスだけを独立して学べます。
 
 import pytest
 from pypdf import PdfWriter
@@ -15,9 +17,11 @@ from services.pdf_service import (
 def _make_pdf(texts: list[str]) -> bytes:
     """Build a small in-memory text PDF without Word or other PDF libraries."""
     writer = PdfWriter()
+    # テスト用の英字テキストを各ページへ配置します。日本語文書の抽出品質テストではありません。
     for text in texts:
         page = writer.add_blank_page(width=300, height=300)
         page[NameObject("/Resources")] = DictionaryObject(
+            # PDF内部のフォント定義。NameObject/DictionaryObjectはPDFの構造を表す型です。
             {
                 NameObject("/Font"): DictionaryObject(
                     {
@@ -34,6 +38,7 @@ def _make_pdf(texts: list[str]) -> bytes:
         )
         content = DecodedStreamObject()
         content.set_data(f"BT /F1 12 Tf 20 250 Td ({text}) Tj ET".encode("ascii"))
+        # BT～ETはPDFのテキスト描画命令。作った命令をページのContentsへ入れます。
         page[NameObject("/Contents")] = content
     stream = BytesIO()
     writer.write(stream)
@@ -54,9 +59,11 @@ def test_extract_blank_page_reports_no_text() -> None:
         extract_page_texts(_make_pdf([""]), 1, 1)
 
 
+# parametrizeは1つのテストを複数の入力で実行するpytestの仕組みです。
 @pytest.mark.parametrize("operation", [get_page_count, lambda data: extract_page_texts(data, 1, 1)])
 def test_invalid_pdf_is_wrapped_as_processing_error(operation) -> None:
     with pytest.raises(PdfProcessingError):
+        # raisesは指定した例外が発生することを検証します。発生しない場合もテスト失敗です。
         operation(b"not a PDF")
 
 

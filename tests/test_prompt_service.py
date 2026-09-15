@@ -1,4 +1,6 @@
 from services.prompt_service import build_full_prompt, build_instruction_prompt
+# 指示部分と本文部分が正しく分かれ、選択観点が指示に反映されるかを検証します。
+# 外部通信がない文字列生成なので、入力と出力の対応を追いやすいテストです。
 
 
 def test_build_instruction_prompt_includes_selected_rule_but_not_document() -> None:
@@ -13,4 +15,3 @@ def test_build_full_prompt_adds_document() -> None:
     full_prompt = build_full_prompt("instruction", "--- PAGE 2 ---\n本文")
     assert "instruction" in full_prompt
     assert "--- PAGE 2 ---" in full_prompt
-

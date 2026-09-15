@@ -3,6 +3,7 @@ from utils.file_utils import reviews_to_markdown
 
 
 def test_reviews_to_markdown() -> None:
+    # 準備（指摘データを作る）→ 実行（Markdownへ変換）→ 検証（必要な文字列を確認）の順です。
     item = ReviewItem(
         page=2,
         category="テスト可能性",
@@ -16,4 +17,3 @@ def test_reviews_to_markdown() -> None:
     assert "ページ 2" in markdown
     assert "重要度: 高" in markdown
     assert "期待値を明記する" in markdown
-

@@ -1,4 +1,5 @@
 from utils.text_utils import chunk_page_texts
+# "A" * 60のような文字列の繰り返しで、文字数を調整した入力データを簡単に作れます。
 
 
 def test_chunking_prefers_pages_and_preserves_page_markers() -> None:
@@ -14,5 +15,5 @@ def test_long_page_is_split_and_each_chunk_keeps_page_number() -> None:
 
     assert len(chunks) >= 3
     assert all(chunk.startswith("--- PAGE 3 ---") for chunk in chunks)
+    # allは「すべての条件が真か」を確認します。ここでは全断片に同じページ番号があるか調べます。
     assert all(len(chunk) <= 100 for chunk in chunks)
-
